@@ -1,0 +1,1712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grand Luxury Tree Final v2</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Times New Roman', serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* UI Overlay - Minimalist */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 10; pointer-events: none;
+            display: flex; flex-direction: column; 
+            align-items: center;
+            padding-top: 40px;
+            box-sizing: border-box;
+            /* Remove transition here as we don't hide the whole layer anymore */
+        }
+        
+        /* When hidden class is applied to specific elements */
+        .ui-hidden {
+            opacity: 0;
+            pointer-events: none !important;
+        }
+
+        /* Loading */
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            transition: opacity 0.8s ease-out;
+        }
+        .loader-text {
+            color: #d4af37; font-size: 14px; letter-spacing: 4px; margin-top: 20px;
+            text-transform: uppercase; font-weight: 100;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 1px solid rgba(212, 175, 55, 0.2); 
+            border-top: 1px solid #d4af37; border-radius: 50%; 
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Typography - Centerpiece */
+        h1 { 
+            color: #fceea7; font-size: 56px; margin: 0; font-weight: 400; 
+            letter-spacing: 6px; 
+            text-shadow: 0 0 50px rgba(252, 238, 167, 0.6); 
+            background: linear-gradient(to bottom, #fff, #eebb66);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            font-family: 'Cinzel', 'Times New Roman', serif;
+            opacity: 0.9;
+            transition: opacity 0.5s ease; /* Ensure smooth transitions if needed */
+        }
+        h1.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+
+        /* Webcam feedback */
+        #webcam-wrapper {
+            position: absolute; bottom: 40px; right: 40px;
+            width: 120px; height: 90px;
+            border: 1px solid rgba(255,255,255,0.1);
+            overflow: hidden; opacity: 0; /* Hidden by default but functional */
+            pointer-events: none;
+        }
+
+        /* 文字弹窗样式 */
+    </style>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div class="loader-text">Loading Holiday Magic</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer">
+    </div>
+    
+    <!-- 背景音乐 -->
+    <video id="background-music" loop autoplay muted style="display: none;">
+        <source src="145405201-1-16.mp4" type="video/mp4">
+    </video>
+
+    <!-- Webcam hidden structure -->
+    <div id="webcam-wrapper">
+        <video id="webcam" autoplay playsinline style="display:none;"></video>
+        <canvas id="webcam-preview"></canvas>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'; 
+        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            colors: {
+                bg: 0x000000, 
+                champagneGold: 0xffd966, 
+                deepGreen: 0x03180a,     
+                accentRed: 0x990000,     
+            },
+            particles: {
+                count: 1500,     
+                dustCount: 2000, 
+                treeHeight: 24,  
+                treeRadius: 9    
+            },
+            camera: {
+                z: 50 
+            }
+        };
+
+        const STATE = {
+            mode: 'TREE', 
+            focusIndex: -1, 
+            focusTarget: null,
+            hand: { detected: false, x: 0, y: 0 },
+            bothHandsDetected: false, // 双手检测状态
+            bothHandsStartTime: 0, // 双手抬起的开始时间
+            bothHandsDuration: 0, // 双手抬起的持续时间
+            messageModeEnabled: false, // 文字弹窗功能是否开启
+            currentMessageIndex: 0, // 当前要显示的消息索引
+            messageTimer: null, // 消息弹出定时器
+            finalMessageShown: false, // 最后一个消息是否已显示
+            finalMessageStartTime: 0, // 最后一个消息开始显示的时间
+            greetingMessageShown: false, // "小米，圣诞快乐"消息是否已显示
+            greetingMessageStartTime: 0, // "小米，圣诞快乐"消息开始显示的时间
+            messageModeCompleted: false, // 消息模式是否已完成（完成后不再启动）
+            backgroundFadeOut: 0, // 背景淡出程度（0-1）
+            treeScale: 1.0, // 圣诞树缩放比例
+            rotation: { x: 0, y: 0 } 
+        };
+
+        let scene, camera, renderer, composer;
+        let mainGroup; 
+        let clock = new THREE.Clock();
+        let particleSystem = []; 
+        let photoMeshGroup = new THREE.Group();
+        let handLandmarker, video, webcamCanvas, webcamCtx;
+        let caneTexture; 
+
+        // 初始化背景音乐
+        function initBackgroundMusic() {
+            const video = document.getElementById('background-music');
+            if (video) {
+                // 确保循环播放
+                video.loop = true;
+                // 设置音量（可选，0.0 到 1.0）
+                video.volume = 0.5;
+                // 取消静音（因为设置了muted属性用于自动播放）
+                video.muted = false;
+                
+                // 监听播放结束事件，确保循环播放
+                video.addEventListener('ended', () => {
+                    video.currentTime = 0;
+                    video.play().catch(err => console.log('循环播放失败:', err));
+                });
+                
+                // 尝试自动播放，如果失败则等待用户交互
+                video.play().catch(error => {
+                    console.log('自动播放被阻止，等待用户交互:', error);
+                    // 添加点击事件来启动音频
+                    const startAudio = () => {
+                        video.muted = false; // 取消静音
+                        video.loop = true; // 确保循环
+                        video.play().catch(err => console.log('播放失败:', err));
+                        document.removeEventListener('click', startAudio);
+                        document.removeEventListener('touchstart', startAudio);
+                    };
+                    document.addEventListener('click', startAudio);
+                    document.addEventListener('touchstart', startAudio);
+                });
+            }
+        }
+        
+        async function init() {
+            initThree();
+            setupEnvironment(); 
+            setupLights();
+            createTextures();
+            createParticles(); 
+            createDust();     
+            createDefaultPhotos();
+            // 不自动创建消息，等检测到双手时再创建
+            setupPostProcessing();
+            setupEvents();
+            await initMediaPipe();
+            
+            const loader = document.getElementById('loader');
+            loader.style.opacity = 0;
+            setTimeout(() => {
+                loader.remove();
+            }, 800);
+
+            // 初始化背景音乐
+            initBackgroundMusic();
+            
+            animate();
+        }
+
+        // 消息系统 - 使用3D对象
+        let messageParticles = [];
+        let messagesCreated = false;
+        
+        // 预定义消息位置数组（确保不重叠，相距一定距离）
+        let predefinedPositions = [];
+        let positionUsage = []; // 记录每个位置是否被占用
+        
+        // 初始化预定义位置
+        function initPredefinedPositions() {
+            predefinedPositions = [];
+            positionUsage = [];
+            
+            // 计算屏幕可见范围
+            const cameraZ = 50;
+            const fov = 42 * (Math.PI / 180);
+            const visibleHeight = 2 * Math.tan(fov / 2) * cameraZ;
+            const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
+                const maxX = visibleWidth * 0.25; // 从0.35改为0.25，让消息更靠近圣诞树
+                const maxY = visibleHeight * 0.25; // 从0.35改为0.25，让消息更靠近圣诞树
+            
+            // 圣诞树区域（中心区域，需要避开）
+            const treeRadius = 10;
+            
+            // 消息的实际尺寸
+            const messageWidth = 14; // sprite scale x
+            const messageHeight = 3.5; // sprite scale y
+            const messageDiagonal = Math.sqrt(messageWidth * messageWidth + messageHeight * messageHeight);
+            const minDistance = messageDiagonal * 1.3; // 增加最小距离，确保不重叠（从0.8改为1.3）
+            
+            // 使用螺旋布局生成位置，确保均匀分布且不重叠
+            const minRadius = treeRadius + minDistance;
+            const maxRadius = Math.min(maxX, maxY) - 2;
+            const radiusStep = minDistance * 1.2; // 层间距
+            
+            // 生成足够的位置（至少30个）
+            let currentRadius = minRadius;
+            let angle = 0;
+            const messagesPerRing = 8; // 每层8个位置
+            
+            while (predefinedPositions.length < 30 && currentRadius < maxRadius) {
+                // 在当前半径上生成位置
+                for (let i = 0; i < messagesPerRing; i++) {
+                    const currentAngle = angle + (i / messagesPerRing) * Math.PI * 2;
+                    const x = Math.cos(currentAngle) * currentRadius;
+                    const y = Math.sin(currentAngle) * currentRadius;
+                    
+                    // 确保在可见范围内
+                    if (Math.abs(x) <= maxX && Math.abs(y) <= maxY) {
+                        // 检查是否与已有位置重叠
+                        let overlaps = false;
+                        for (const pos of predefinedPositions) {
+                            const dx = pos.x - x;
+                            const dy = pos.y - y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < minDistance) {
+                                overlaps = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!overlaps) {
+                            predefinedPositions.push({ x, y });
+                            if (predefinedPositions.length >= 30) break;
+                        }
+                    }
+                }
+                
+                // 移动到下一层
+                currentRadius += radiusStep;
+                angle += Math.PI / 12; // 旋转角度，让下一层位置错开
+                
+                if (predefinedPositions.length >= 30) break;
+            }
+            
+            // 如果位置还不够，在周围随机生成更多位置
+            let attempts = 0;
+            while (predefinedPositions.length < 30 && attempts < 2000) {
+                const x = (Math.random() - 0.5) * maxX * 2;
+                const y = (Math.random() - 0.5) * maxY * 2;
+                
+                const distToCenter = Math.sqrt(x * x + y * y);
+                if (distToCenter < treeRadius + minDistance) {
+                    attempts++;
+                    continue;
+                }
+                
+                let overlaps = false;
+                for (const pos of predefinedPositions) {
+                    const dx = pos.x - x;
+                    const dy = pos.y - y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < minDistance) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                
+                if (!overlaps) {
+                    predefinedPositions.push({ x, y });
+                }
+                attempts++;
+            }
+            
+            // 打乱位置顺序，让分布看起来更随机
+            for (let i = predefinedPositions.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [predefinedPositions[i], predefinedPositions[j]] = [predefinedPositions[j], predefinedPositions[i]];
+            }
+            
+            // 初始化位置使用状态
+            positionUsage = new Array(predefinedPositions.length).fill(false);
+            console.log('Generated', predefinedPositions.length, 'predefined positions');
+        }
+        
+        const MESSAGES = [
+            '宝宝不许睡',
+            '我是小黑兔',
+            '你喜不喜欢我',
+            '好香呀宝宝',
+            '刘夙，不许睡',
+            '起来，压到头发了',
+            '你不准转过去',
+            '你多睡一会',
+            '有没有吃的',
+            '你有没有想我',
+            '晚安宝宝',
+            '再亲一下',
+            '你不抱我',
+            '你抱我一下',
+            '你亲我一下',
+            '你是不是不喜欢我',
+            '我觉得宝宝最好看了',
+           
+            '宝宝，好有感觉怎么办',
+            '宝宝你小声一点',
+            '谷睿佳，不许睡',
+            '宝宝，想你了'
+        ];
+        
+        // 创建文字纹理
+        function createTextTexture(text) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 1024;
+            canvas.height = 256;
+            
+            // 不绘制背景，只绘制文字
+            
+            // 文字 - 白色，加粗，无辉光效果
+            context.fillStyle = '#ffffff';
+            context.font = 'bold 85px Arial, sans-serif'; // 字体大小
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            
+            // 绘制文字（无辉光效果）
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            texture.colorSpace = THREE.SRGBColorSpace;
+            return texture;
+        }
+        
+        // 创建单个消息粒子（抓手时调用）
+        function createSingleMessage(index) {
+            if (index >= MESSAGES.length) return; // 所有消息都已显示
+            
+            const text = MESSAGES[index];
+            const isLastMessage = (index === MESSAGES.length - 1); // 是否是最后一个消息
+            
+            // 如果是最后一个消息，创建特殊的大字体纹理
+            let texture;
+            if (isLastMessage) {
+                // 创建更大的文字纹理
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = 2048; // 更大的画布
+                canvas.height = 512;
+                context.fillStyle = '#ffffff';
+                context.font = 'bold 160px Arial, sans-serif'; // 更大的字体
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(text, canvas.width / 2, canvas.height / 2);
+                texture = new THREE.CanvasTexture(canvas);
+                texture.needsUpdate = true;
+                texture.colorSpace = THREE.SRGBColorSpace;
+            } else {
+                texture = createTextTexture(text);
+            }
+            
+                const spriteMaterial = new THREE.SpriteMaterial({
+                    map: texture,
+                    transparent: true,
+                    alphaTest: 0.01,
+                    depthTest: false,
+                    depthWrite: false
+                });
+                
+                const sprite = new THREE.Sprite(spriteMaterial);
+                
+                // 添加到场景而不是mainGroup，这样不会跟随树旋转
+                scene.add(sprite);
+                
+            if (isLastMessage) {
+                // 最后一个消息：在屏幕正中间，非常大
+                sprite.position.set(0, 0, 0); // 屏幕正中间
+                sprite.scale.set(50, 12.5, 1); // 字体变大（从40, 10改为50, 12.5）
+                sprite.userData.targetRotationAngle = 0; // 不旋转
+                sprite.userData.currentRotationAngle = 0;
+                sprite.userData.isRotating = false;
+                sprite.userData.isFinalMessage = true;
+                
+                // 标记最后一个消息已显示，开始计时
+                STATE.finalMessageShown = true;
+                STATE.finalMessageStartTime = performance.now();
+                STATE.backgroundFadeOut = 0;
+                
+                // 初始透明度为0，然后淡入
+                spriteMaterial.opacity = 0;
+                sprite.userData.fadeIn = true;
+                sprite.userData.fadeTime = 0;
+                sprite.userData.material = spriteMaterial;
+            } else {
+                // 普通消息：纯随机分布，但确保不重叠
+                let xPos, yPos, zPos;
+                
+                // 消息的实际尺寸（考虑scale）
+                const messageWidth = 14; // sprite scale x
+                const messageHeight = 3.5; // sprite scale y
+                // 考虑旋转后的最大占用空间（对角线长度），并加上安全边距
+                const messageDiagonal = Math.sqrt(messageWidth * messageWidth + messageHeight * messageHeight);
+                const minDistance = messageDiagonal * 1.8; // 最小距离，确保不重叠
+                
+                // 计算屏幕可见范围，缩小分布范围，让消息更靠近圣诞树
+                const cameraZ = 50;
+                const fov = 42 * (Math.PI / 180);
+                const visibleHeight = 2 * Math.tan(fov / 2) * cameraZ;
+                const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
+                const maxX = visibleWidth * 0.25; // 从0.35改为0.25，让消息更靠近圣诞树
+                const maxY = visibleHeight * 0.25; // 从0.35改为0.25，让消息更靠近圣诞树
+                
+                // 圣诞树区域（中心区域，需要避开）
+                const treeRadius = 10;
+                
+                // 重叠检测函数：只检查还在显示的消息（没有淡出或透明度>0.1的消息）
+                function checkOverlap(newX, newY, existingMessages) {
+                    for (const p of existingMessages) {
+                        if (!p.mesh || !p.mesh.userData) continue;
+                        
+                        // 只检查还在显示的消息（没有淡出，且透明度>0.1）
+                        const userData = p.mesh.userData;
+                        if (userData.fadeOut || (userData.material && userData.material.opacity < 0.1)) {
+                            continue; // 跳过已消失或正在淡出的消息
+                        }
+                        
+                        const existingX = p.mesh.position.x;
+                        const existingY = p.mesh.position.y;
+                        const existingScale = p.mesh.scale;
+                        const existingWidth = existingScale.x;
+                        const existingHeight = existingScale.y;
+                        
+                        // 计算两个消息中心点的距离
+                        const dx = existingX - newX;
+                        const dy = existingY - newY;
+                        const centerDist = Math.sqrt(dx * dx + dy * dy);
+                        
+                        // 计算两个消息旋转后的最大占用空间（对角线长度）
+                        const existingDiagonal = Math.sqrt(existingWidth * existingWidth + existingHeight * existingHeight);
+                        const newDiagonal = messageDiagonal;
+                        
+                        // 最小分离距离 = 两个消息对角线长度之和的100%，确保完全不重叠
+                        const minSeparation = (existingDiagonal + newDiagonal) * 1.0;
+                        
+                        if (centerDist < minSeparation) {
+                            return true; // 重叠
+                        }
+                    }
+                    return false; // 不重叠
+                }
+                
+                // 检查是否与最近4个消息位置太近
+                function checkRecentPositions(newX, newY, existingMessages) {
+                    // 获取最近创建的4个消息（按索引排序，取最后4个）
+                    const recentMessages = existingMessages
+                        .filter(p => p.index !== undefined && p.index >= 0)
+                        .sort((a, b) => b.index - a.index)
+                        .slice(0, 4); // 取最近4个
+                    
+                    for (const p of recentMessages) {
+                        if (!p.mesh) continue;
+                        
+                        const existingX = p.mesh.position.x;
+                        const existingY = p.mesh.position.y;
+                        
+                        // 计算距离
+                        const dx = existingX - newX;
+                        const dy = existingY - newY;
+                        const centerDist = Math.sqrt(dx * dx + dy * dy);
+                        
+                        // 如果距离太近（小于最小距离），认为位置相同
+                        if (centerDist < minDistance) {
+                            return true; // 与最近4个消息位置太近
+                        }
+                    }
+                    return false; // 位置不同
+                }
+                
+                let foundPosition = false;
+                let attempts = 0;
+                const maxAttempts = 10000; // 增加尝试次数，确保能找到位置
+                
+                // 纯随机生成位置，直到找到不重叠且与最近4个消息位置不同的位置
+                while (!foundPosition && attempts < maxAttempts) {
+                    // 在整个屏幕范围内完全随机生成位置
+                    xPos = (Math.random() - 0.5) * maxX * 2;
+                    yPos = (Math.random() - 0.5) * maxY * 2;
+                    
+                    // 检查是否在圣诞树区域内（避开中心区域）
+                    const distToCenter = Math.sqrt(xPos * xPos + yPos * yPos);
+                    if (distToCenter < treeRadius + minDistance) {
+                        attempts++;
+                        continue;
+                    }
+                    
+                    // 检查是否与最近4个消息位置不同
+                    if (checkRecentPositions(xPos, yPos, messageParticles)) {
+                        attempts++;
+                        continue;
+                    }
+                    
+                    // 使用重叠检测
+                    if (!checkOverlap(xPos, yPos, messageParticles)) {
+                        foundPosition = true;
+                    }
+                    
+                    attempts++;
+                }
+                
+                // 如果尝试了maxAttempts次还没找到，使用最后一次随机位置（即使可能轻微重叠）
+                if (!foundPosition) {
+                    xPos = (Math.random() - 0.5) * maxX * 2;
+                    yPos = (Math.random() - 0.5) * maxY * 2;
+                    const distToCenter = Math.sqrt(xPos * xPos + yPos * yPos);
+                    if (distToCenter < treeRadius + minDistance) {
+                        // 如果在圣诞树区域内，调整到外面
+                        const angleToCenter = Math.atan2(yPos, xPos);
+                        xPos = Math.cos(angleToCenter) * (treeRadius + minDistance);
+                        yPos = Math.sin(angleToCenter) * (treeRadius + minDistance);
+                    }
+                    // 确保在可见范围内
+                    xPos = Math.max(-maxX, Math.min(maxX, xPos));
+                    yPos = Math.max(-maxY, Math.min(maxY, yPos));
+                }
+                
+                zPos = -3 + Math.random() * 6;
+                
+                sprite.position.set(xPos, yPos, zPos);
+                sprite.scale.set(14, 3.5, 1); // 字体大小
+                
+                // 随机旋转角度（-20到20度，两个方向均可）
+                const randomAngle = (Math.random() - 0.5) * 2 * 20 * (Math.PI / 180); // -20到20度
+                sprite.userData.targetRotationAngle = randomAngle; // 目标旋转角度
+                // 初始角度从更倾斜的位置开始（目标角度 ± 10-20度），形成斜着出现的效果
+                const tiltDirection = Math.random() > 0.5 ? 1 : -1;
+                const tiltAmount = (10 + Math.random() * 10) * (Math.PI / 180); // 10-20度
+                sprite.userData.initialRotationAngle = randomAngle + tiltDirection * tiltAmount;
+                sprite.userData.currentRotationAngle = sprite.userData.initialRotationAngle; // 从初始角度开始
+                sprite.userData.rotationSpeed = 2.0; // 旋转速度（弧度/秒）
+                sprite.userData.isRotating = true; // 是否正在旋转
+                sprite.userData.rotationTime = 0; // 旋转动画时间
+                
+                // 初始透明度为0，然后淡入
+                spriteMaterial.opacity = 0;
+                sprite.userData.fadeIn = true;
+                sprite.userData.fadeTime = 0;
+                sprite.userData.material = spriteMaterial;
+            }
+            
+            messageParticles.push({ mesh: sprite, type: 'MESSAGE', index: index });
+        }
+        
+        // 创建"小米，圣诞快乐"消息（在最后一个消息的同样位置）
+        function createGreetingMessage() {
+            const text = '小米，圣诞快乐';
+            // 创建更大的文字纹理（与最后一个消息相同）
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 2048; // 更大的画布
+            canvas.height = 512;
+            context.fillStyle = '#ffffff';
+            context.font = 'bold 160px Arial, sans-serif'; // 更大的字体
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            texture.colorSpace = THREE.SRGBColorSpace;
+            
+            const spriteMaterial = new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true,
+                alphaTest: 0.01,
+                depthTest: false,
+                depthWrite: false
+            });
+            
+            const sprite = new THREE.Sprite(spriteMaterial);
+            scene.add(sprite);
+            
+            // 在同样的位置（屏幕正中间）
+            sprite.position.set(0, 0, 0); // 屏幕正中间，与最后一个消息相同位置
+            sprite.scale.set(50, 12.5, 1); // 与最后一个消息相同大小
+            sprite.userData.targetRotationAngle = 0; // 不旋转
+            sprite.userData.currentRotationAngle = 0;
+            sprite.userData.isRotating = false;
+            sprite.userData.isGreetingMessage = true; // 标记为问候消息
+            
+            // 初始透明度为0，然后淡入
+            spriteMaterial.opacity = 0;
+            sprite.userData.fadeIn = true;
+            sprite.userData.fadeTime = 0;
+            sprite.userData.material = spriteMaterial;
+            
+            messageParticles.push({ mesh: sprite, type: 'MESSAGE', index: -1 }); // 使用-1作为特殊索引
+        }
+        
+        // 开始消息淡出动画（旋转并淡出）
+        function startMessageFadeOut() {
+            messageParticles.forEach(particle => {
+                if (particle.mesh && particle.mesh.userData) {
+                    const userData = particle.mesh.userData;
+                    // 设置淡出状态
+                    userData.fadeOut = true;
+                    userData.fadeOutTime = 0; // 确保初始化为0
+                    // 设置淡出时的目标旋转角度（-20到20度）
+                    userData.fadeOutTargetAngle = (Math.random() - 0.5) * 2 * 20 * (Math.PI / 180);
+                    // 从当前角度开始旋转（确保有值）
+                    userData.fadeOutStartAngle = userData.currentRotationAngle || userData.targetRotationAngle || 0;
+                    userData.isRotatingToFadeOut = true;
+                    // 确保淡入状态已结束
+                    userData.fadeIn = false;
+                }
+            });
+        }
+        
+        // 清除消息（在淡出完成后调用）
+        function clearMessages() {
+            messageParticles.forEach(particle => {
+                if (particle.mesh && particle.mesh.parent) {
+                    particle.mesh.parent.remove(particle.mesh);
+                }
+            });
+            messageParticles = [];
+            messagesCreated = false;
+            // 清除定时器
+            if (STATE.messageTimer) {
+                clearTimeout(STATE.messageTimer);
+                clearInterval(STATE.messageTimer);
+                STATE.messageTimer = null;
+            }
+        }
+        
+        // 启动自动消息序列（等待前一个消息完全消失后再显示下一个）
+        function startAutoMessageSequence() {
+            // 清除之前的定时器
+            if (STATE.messageTimer) {
+                clearTimeout(STATE.messageTimer);
+                clearInterval(STATE.messageTimer);
+            }
+            
+            // 创建下一个消息的函数
+            function createNextMessage() {
+                if (STATE.currentMessageIndex < MESSAGES.length) {
+                    // 检查下一个是否是最后一个消息
+                    if (STATE.currentMessageIndex === MESSAGES.length - 1) {
+                        // 最后一个消息前等待4秒
+                        STATE.messageTimer = setTimeout(() => {
+                            createSingleMessage(STATE.currentMessageIndex);
+                            STATE.currentMessageIndex++;
+                        }, 4000);
+                    } else {
+                        // 计算当前屏幕上可见的消息数量（没有淡出且透明度>0.1）
+                        const visibleMessages = messageParticles.filter(p => {
+                            if (!p.mesh || !p.mesh.userData) return false;
+                            const userData = p.mesh.userData;
+                            return !userData.fadeOut && userData.material && userData.material.opacity > 0.1;
+                        }).length;
+                        
+                        // 如果屏幕上少于5个消息，可以创建新消息
+                        if (visibleMessages < 5) {
+                            createSingleMessage(STATE.currentMessageIndex);
+                            STATE.currentMessageIndex++;
+                            // 等待1秒后再检查是否可以创建下一个（让消息更快出现）
+                            STATE.messageTimer = setTimeout(createNextMessage, 1000);
+                        } else {
+                            // 屏幕上已经有5个消息，等待0.2秒后再检查
+                            STATE.messageTimer = setTimeout(createNextMessage, 200);
+                        }
+                    }
+                } else {
+                    // 所有消息都已创建，清除定时器
+                    STATE.messageTimer = null;
+                }
+            }
+            
+            // 立即创建第一个消息
+            if (STATE.currentMessageIndex < MESSAGES.length) {
+                createSingleMessage(STATE.currentMessageIndex);
+                STATE.currentMessageIndex++;
+                // 等待1秒后再创建下一个
+                STATE.messageTimer = setTimeout(createNextMessage, 1000);
+            }
+        }
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(CONFIG.colors.bg);
+            scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.01); 
+
+            camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, CONFIG.camera.z); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ReinhardToneMapping; 
+            renderer.toneMappingExposure = 2.2; 
+            container.appendChild(renderer.domElement);
+
+            mainGroup = new THREE.Group();
+            scene.add(mainGroup);
+        }
+
+        function setupEnvironment() {
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+        }
+
+        function setupLights() {
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambient);
+
+            const innerLight = new THREE.PointLight(0xffaa00, 2, 20);
+            innerLight.position.set(0, 5, 0);
+            mainGroup.add(innerLight);
+
+            const spotGold = new THREE.SpotLight(0xffcc66, 1200);
+            spotGold.position.set(30, 40, 40);
+            spotGold.angle = 0.5;
+            spotGold.penumbra = 0.5;
+            scene.add(spotGold);
+
+            const spotBlue = new THREE.SpotLight(0x6688ff, 600);
+            spotBlue.position.set(-30, 20, -30);
+            scene.add(spotBlue);
+            
+            const fill = new THREE.DirectionalLight(0xffeebb, 0.8);
+            fill.position.set(0, 0, 50);
+            scene.add(fill);
+        }
+
+        function setupPostProcessing() {
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.7; 
+            bloomPass.strength = 0.45; 
+            bloomPass.radius = 0.4;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+        }
+
+        function createTextures() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0,0,128,128);
+            ctx.fillStyle = '#880000'; 
+            ctx.beginPath();
+            for(let i=-128; i<256; i+=32) {
+                ctx.moveTo(i, 0); ctx.lineTo(i+32, 128); ctx.lineTo(i+16, 128); ctx.lineTo(i-16, 0);
+            }
+            ctx.fill();
+            caneTexture = new THREE.CanvasTexture(canvas);
+            caneTexture.wrapS = THREE.RepeatWrapping;
+            caneTexture.wrapT = THREE.RepeatWrapping;
+            caneTexture.repeat.set(3, 3);
+        }
+
+        class Particle {
+            constructor(mesh, type, isDust = false) {
+                this.mesh = mesh;
+                this.type = type;
+                this.isDust = isDust;
+                
+                this.posTree = new THREE.Vector3();
+                this.posScatter = new THREE.Vector3();
+                this.baseScale = mesh.scale.x; 
+
+                // Individual Spin Speed
+                // Photos spin slower to be readable
+                const speedMult = (type === 'PHOTO') ? 0.3 : 2.0;
+
+                this.spinSpeed = new THREE.Vector3(
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult,
+                    (Math.random() - 0.5) * speedMult
+                );
+
+                this.calculatePositions();
+            }
+
+            calculatePositions() {
+                // TREE: Tight Spiral
+                const h = CONFIG.particles.treeHeight;
+                const halfH = h / 2;
+                let t = Math.random(); 
+                t = Math.pow(t, 0.8); 
+                const y = (t * h) - halfH;
+                let rMax = CONFIG.particles.treeRadius * (1.0 - t); 
+                if (rMax < 0.5) rMax = 0.5;
+                const angle = t * 50 * Math.PI + Math.random() * Math.PI; 
+                const r = rMax * (0.8 + Math.random() * 0.4); 
+                this.posTree.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
+
+                // SCATTER: 3D Sphere
+                let rScatter;
+                if (this.isDust) {
+                    rScatter = 12 + Math.random() * 20;
+                } else if (this.type === 'MESSAGE') {
+                    // 消息只出现在圣诞树两边（左右区域）
+                    // x方向：左右两边，y和z可以变化
+                    const side = Math.random() > 0.5 ? 1 : -1; // 左边或右边
+                    const xPos = side * (12 + Math.random() * 8); // 左右两边，距离中心12-20
+                    const yPos = (Math.random() - 0.5) * 15; // y方向：-7.5 到 7.5
+                    const zPos = -5 + Math.random() * 10; // z方向：-5 到 5
+                    this.posScatter.set(xPos, yPos, zPos);
+                    return; // 直接返回，不执行下面的球体计算
+                } else {
+                    rScatter = 8 + Math.random() * 12;
+                }
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                this.posScatter.set(
+                    rScatter * Math.sin(phi) * Math.cos(theta),
+                    rScatter * Math.sin(phi) * Math.sin(theta),
+                    rScatter * Math.cos(phi)
+                );
+            }
+
+            update(dt, mode, focusTargetMesh) {
+                let target = this.posTree;
+                
+                // 消息粒子：检测到双手时在散开位置淡出，不移动
+                if (this.type === 'MESSAGE') {
+                    if (messagesCreated) {
+                        // 双手检测到，保持在散开位置，不移动
+                        target = this.posScatter;
+                        // 淡入效果
+                        if (this.fadeIn && this.mesh.material) {
+                            this.fadeTime += dt;
+                            const fadeDuration = 1.0; // 1秒淡入
+                            if (this.fadeTime < fadeDuration) {
+                                this.mesh.material.opacity = Math.min(this.fadeTime / fadeDuration, 1.0);
+                            } else {
+                                this.mesh.material.opacity = 1.0;
+                                this.fadeIn = false;
+                            }
+                        }
+                    } else {
+                        // 没有双手，淡出并移除
+                        if (this.mesh.material) {
+                            this.mesh.material.opacity = Math.max(0, this.mesh.material.opacity - dt * 2);
+                        }
+                        target = this.posScatter;
+                    }
+                } else if (mode === 'SCATTER') {
+                    target = this.posScatter;
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) {
+                        const desiredWorldPos = new THREE.Vector3(0, 2, 35);
+                        const invMatrix = new THREE.Matrix4().copy(mainGroup.matrixWorld).invert();
+                        target = desiredWorldPos.applyMatrix4(invMatrix);
+                    } else {
+                        target = this.posScatter;
+                    }
+                }
+
+                // Movement Easing
+                if (this.type === 'MESSAGE' && messagesCreated) {
+                    // 消息粒子：保持在散开位置，不移动
+                    this.mesh.position.copy(target);
+                } else {
+                    const lerpSpeed = (mode === 'FOCUS' && this.mesh === focusTargetMesh) ? 5.0 : 2.0; 
+                    this.mesh.position.lerp(target, lerpSpeed * dt);
+                }
+
+                // Rotation Logic - CRITICAL: Ensure spin happens in Scatter
+                if (this.type === 'MESSAGE') {
+                    // 消息始终面向相机，不旋转
+                    this.mesh.lookAt(camera.position);
+                } else if (mode === 'SCATTER') {
+                    this.mesh.rotation.x += this.spinSpeed.x * dt;
+                    this.mesh.rotation.y += this.spinSpeed.y * dt;
+                    this.mesh.rotation.z += this.spinSpeed.z * dt; // Added Z for more natural tumble
+                } else if (mode === 'TREE') {
+                    // Reset rotations slowly
+                    this.mesh.rotation.x = THREE.MathUtils.lerp(this.mesh.rotation.x, 0, dt);
+                    this.mesh.rotation.z = THREE.MathUtils.lerp(this.mesh.rotation.z, 0, dt);
+                    this.mesh.rotation.y += 0.5 * dt;
+                }
+                
+                if (mode === 'FOCUS' && this.mesh === focusTargetMesh) {
+                    this.mesh.lookAt(camera.position); 
+                }
+
+                // Scale Logic
+                let s = this.baseScale;
+                if (this.isDust) {
+                    s = this.baseScale * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 4 + this.mesh.id));
+                    if (mode === 'TREE') s = 0; 
+                } else if (this.type === 'MESSAGE') {
+                    // 消息粒子：保持在散开位置，尺寸固定且一致
+                    // Sprite的scale需要直接设置，不使用lerp
+                    if (messagesCreated) {
+                        // 双手检测到，保持最终尺寸（所有文字大小一致）
+                        this.mesh.scale.set(9, 4, 1);
+                    } else {
+                        // 没有双手，淡出时保持尺寸
+                        this.mesh.scale.set(9, 4, 1);
+                    }
+                    return; // 直接返回，不执行lerp
+                } else if (mode === 'TREE' && this.type === 'PHOTO') {
+                    // 缩小照片在树上的尺寸
+                    s = this.baseScale * 0.5; 
+                } else if (mode === 'SCATTER' && this.type === 'PHOTO') {
+                    // Large preview size in scatter (缩小一点)
+                    s = this.baseScale * 2.0; 
+                } else if (mode === 'FOCUS') {
+                    if (this.mesh === focusTargetMesh) s = 4.5; 
+                    else s = this.baseScale * 0.8; 
+                }
+                
+                this.mesh.scale.lerp(new THREE.Vector3(s,s,s), 4*dt);
+            }
+        }
+
+        // --- CREATION ---
+        function createParticles() {
+            const sphereGeo = new THREE.SphereGeometry(0.5, 32, 32); 
+            const boxGeo = new THREE.BoxGeometry(0.55, 0.55, 0.55); 
+            const curve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, -0.5, 0), new THREE.Vector3(0, 0.3, 0),
+                new THREE.Vector3(0.1, 0.5, 0), new THREE.Vector3(0.3, 0.4, 0)
+            ]);
+            const candyGeo = new THREE.TubeGeometry(curve, 16, 0.08, 8, false);
+
+            const goldMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.champagneGold,
+                metalness: 1.0, roughness: 0.1,
+                envMapIntensity: 2.0, 
+                emissive: 0x443300,   
+                emissiveIntensity: 0.3
+            });
+
+            const greenMat = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.deepGreen,
+                metalness: 0.5, roughness: 0.8,
+                emissive: 0x002200,
+                emissiveIntensity: 0.2 
+            });
+
+            const redMat = new THREE.MeshPhysicalMaterial({
+                color: CONFIG.colors.accentRed,
+                metalness: 0.3, roughness: 0.2, clearcoat: 1.0,
+                emissive: 0x330000
+            });
+            
+            const candyMat = new THREE.MeshStandardMaterial({ map: caneTexture, roughness: 0.4 });
+
+            for (let i = 0; i < CONFIG.particles.count; i++) {
+                const rand = Math.random();
+                let mesh, type;
+                
+                if (rand < 0.40) {
+                    mesh = new THREE.Mesh(boxGeo, greenMat);
+                    type = 'BOX';
+                } else if (rand < 0.70) {
+                    mesh = new THREE.Mesh(boxGeo, goldMat);
+                    type = 'GOLD_BOX';
+                } else if (rand < 0.92) {
+                    mesh = new THREE.Mesh(sphereGeo, goldMat);
+                    type = 'GOLD_SPHERE';
+                } else if (rand < 0.97) {
+                    mesh = new THREE.Mesh(sphereGeo, redMat);
+                    type = 'RED';
+                } else {
+                    mesh = new THREE.Mesh(candyGeo, candyMat);
+                    type = 'CANE';
+                }
+
+                const s = 0.4 + Math.random() * 0.5;
+                mesh.scale.set(s,s,s);
+                mesh.rotation.set(Math.random()*6, Math.random()*6, Math.random()*6);
+                
+                mainGroup.add(mesh);
+                particleSystem.push(new Particle(mesh, type, false));
+            }
+
+            // 创建五角星几何体
+            function createStarGeometry(innerRadius, outerRadius, height) {
+                const shape = new THREE.Shape();
+                const spikes = 8;
+                const step = (Math.PI * 2) / spikes;
+                
+                for (let i = 0; i < spikes * 2; i++) {
+                    const radius = i % 2 === 0 ? outerRadius : innerRadius;
+                    const angle = i * step / 2 - Math.PI / 2;
+                    const x = Math.cos(angle) * radius;
+                    const y = Math.sin(angle) * radius;
+                    
+                    if (i === 0) {
+                        shape.moveTo(x, y);
+                    } else {
+                        shape.lineTo(x, y);
+                    }
+                }
+                shape.closePath();
+                
+                const extrudeSettings = {
+                    depth: height,
+                    bevelEnabled: true,
+                    bevelThickness: 0.05,
+                    bevelSize: 0.05,
+                    bevelSegments: 3
+                };
+                
+                return new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            }
+            
+            const starGeo = createStarGeometry(0.4, 1.0, 0.2);
+            const starMat = new THREE.MeshStandardMaterial({
+                color: 0xffffff,
+                emissive: 0xffdd00,
+                emissiveIntensity: 2.5,
+                metalness: 0.8,
+                roughness: 0.1
+            });
+            const star = new THREE.Mesh(starGeo, starMat);
+            star.position.set(0, CONFIG.particles.treeHeight/2 + 1.2, 0);
+            star.rotation.z = Math.PI / 2;
+            mainGroup.add(star);
+            
+            // 添加发光效果 - 使用点光源增强发光
+            const starLight = new THREE.PointLight(0xffdd00, 3, 10);
+            starLight.position.copy(star.position);
+            mainGroup.add(starLight);
+            
+            mainGroup.add(photoMeshGroup);
+        }
+
+        function createDust() {
+            const geo = new THREE.TetrahedronGeometry(0.08, 0);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffeebb, transparent: true, opacity: 0.8 });
+            
+            for(let i=0; i<CONFIG.particles.dustCount; i++) {
+                 const mesh = new THREE.Mesh(geo, mat);
+                 mesh.scale.setScalar(0.5 + Math.random());
+                 mainGroup.add(mesh);
+                 particleSystem.push(new Particle(mesh, 'DUST', true));
+            }
+        }
+
+        function createDefaultPhotos() {
+            const loader = new THREE.TextureLoader();
+            const photoFiles = [
+                '06AB5AFF-F29A-4F8E-9E91-CEE7F18F5E0B_1_105_c.jpeg',
+                '2C54C7A0-2779-43FF-B697-6B58669DC32B_1_105_c.jpeg',
+                '32D38B70-5982-441A-9F18-522EF653ECE8_1_105_c.jpeg',
+                '375BFB6B-4275-4B10-825F-4B26686BB549_1_105_c.jpeg',
+                '4433EBB2-87CB-45C3-AE4C-115C6FFE91F8_1_105_c.jpeg',
+                '4CB89914-0B46-4C52-B094-353B46300449_1_105_c.jpeg',
+                '61B385D6-E885-4048-AF76-0F256F0C1001_1_201_a.jpeg',
+                '7443EDE2-CE7C-4498-AF4B-57816434AA9C.JPG',
+                'C97751EB-2A76-43F7-89B1-84FADBAF777C_1_105_c.jpeg',
+                'CD342752-9E9C-4A0F-A6B9-7260C17AAD49_1_105_c.jpeg',
+                'F77B6B8A-F173-4EC4-BAC8-9A0DD801F3E0_1_105_c.jpeg',
+                'IMG_7600.jpeg',
+                'Photo on 17-10-2025 at 21.51 2.jpg'
+            ];
+            
+            let loadedCount = 0;
+            let successCount = 0;
+            
+            // 加载所有照片
+            photoFiles.forEach((photoFile) => {
+                loader.load(
+                    photoFile,
+                    (texture) => {
+                        texture.colorSpace = THREE.SRGBColorSpace;
+                        addPhotoToScene(texture);
+                        loadedCount++;
+                        successCount++;
+                    },
+                    undefined,
+                    (error) => {
+                        console.warn('Failed to load photo:', photoFile, error);
+                        loadedCount++;
+                        // 如果所有照片都加载失败，使用默认文本图片
+                        if (loadedCount === photoFiles.length && successCount === 0) {
+                            createDefaultTextPhoto();
+                        }
+                    }
+                );
+            });
+        }
+        
+        function createDefaultTextPhoto() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#050505'; ctx.fillRect(0,0,512,512);
+            ctx.strokeStyle = '#eebb66'; ctx.lineWidth = 15; ctx.strokeRect(20,20,472,472);
+            ctx.font = '500 60px Times New Roman'; ctx.fillStyle = '#eebb66';
+            ctx.textAlign = 'center'; 
+            ctx.fillText("JOYEUX", 256, 230);
+            ctx.fillText("NOEL", 256, 300);
+            
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            addPhotoToScene(tex);
+        }
+
+        function addPhotoToScene(texture) {
+            // 获取纹理的原始尺寸
+            const image = texture.image;
+            const imageWidth = image.width || image.videoWidth || 1;
+            const imageHeight = image.height || image.videoHeight || 1;
+            const aspectRatio = imageWidth / imageHeight;
+            
+            // 根据原始宽高比设置照片尺寸（保持原始比例）
+            // 缩小基础尺寸，使照片在树上更小
+            const baseSize = 1.0; // 缩小基础尺寸
+            let photoWidth, photoHeight;
+            
+            if (aspectRatio > 1) {
+                // 横向照片
+                photoWidth = baseSize * aspectRatio;
+                photoHeight = baseSize;
+            } else {
+                // 纵向照片
+                photoWidth = baseSize;
+                photoHeight = baseSize / aspectRatio;
+            }
+            
+            // 创建画框，根据照片尺寸调整
+            const framePadding = 0.08; // 画框边距（缩小边框）
+            const frameWidth = photoWidth + framePadding * 2;
+            const frameHeight = photoHeight + framePadding * 2;
+            const frameGeo = new THREE.BoxGeometry(frameWidth, frameHeight, 0.05);
+            const frameMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.champagneGold, metalness: 1.0, roughness: 0.1 });
+            const frame = new THREE.Mesh(frameGeo, frameMat);
+
+            // 创建照片平面，使用原始宽高比
+            const photoGeo = new THREE.PlaneGeometry(photoWidth, photoHeight);
+            const photoMat = new THREE.MeshBasicMaterial({ map: texture });
+            const photo = new THREE.Mesh(photoGeo, photoMat);
+            photo.position.z = 0.04;
+
+            const group = new THREE.Group();
+            group.add(frame);
+            group.add(photo);
+            
+            // 不缩放，保持原始大小
+            // const s = 0.8;
+            // group.scale.set(s,s,s);
+            
+            photoMeshGroup.add(group);
+            particleSystem.push(new Particle(group, 'PHOTO', false));
+        }
+        
+
+        // --- MEDIAPIPE ---
+        async function initMediaPipe() {
+            video = document.getElementById('webcam');
+            webcamCanvas = document.getElementById('webcam-preview');
+            webcamCtx = webcamCanvas.getContext('2d');
+            webcamCanvas.width = 160; webcamCanvas.height = 120;
+
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2  // 支持双手识别
+            });
+            
+            if (navigator.mediaDevices?.getUserMedia) {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            }
+        }
+
+        let lastVideoTime = -1;
+        async function predictWebcam() {
+            if (video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                if (handLandmarker) {
+                    const result = handLandmarker.detectForVideo(video, performance.now());
+                    processGestures(result);
+                }
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        function processGestures(result) {
+            // 检测双手
+            const bothHandsDetected = result.landmarks && result.landmarks.length >= 2;
+            const wasBothHands = STATE.bothHandsDetected;
+            STATE.bothHandsDetected = bothHandsDetected;
+            
+            if (result.landmarks && result.landmarks.length > 0) {
+                STATE.hand.detected = true;
+                const lm = result.landmarks[0];
+                STATE.hand.x = (lm[9].x - 0.5) * 2; 
+                STATE.hand.y = (lm[9].y - 0.5) * 2;
+
+                // 检测到双手时，开始计时
+                if (bothHandsDetected) {
+                    // 如果刚刚检测到双手，记录开始时间
+                    if (!wasBothHands) {
+                        STATE.bothHandsStartTime = performance.now();
+                        STATE.bothHandsDuration = 0;
+                    }
+                    // 持续时间会在animate函数中更新
+                    // 只有当持续时间超过2秒时，才启动消息弹窗模式
+                    if (!STATE.messageModeEnabled && STATE.bothHandsDuration >= 2.0) {
+                        // 如果消息模式已完成，清除之前的状态并重新开始
+                        if (STATE.messageModeCompleted) {
+                            // 清除所有消息
+                            clearMessages();
+                            // 重置状态
+                            STATE.messageModeCompleted = false;
+                            STATE.currentMessageIndex = 0;
+                            STATE.finalMessageShown = false;
+                            STATE.finalMessageStartTime = 0;
+                            STATE.greetingMessageShown = false;
+                            STATE.greetingMessageStartTime = 0;
+                            STATE.backgroundFadeOut = 0;
+                        }
+                        
+                        STATE.messageModeEnabled = true;
+                        STATE.currentMessageIndex = 0;
+                        // 缩小圣诞树（不要太小）
+                        STATE.treeScale = 0.6;
+                        // 强制保持在TREE模式，不允许散开
+                        STATE.mode = 'TREE';
+                        STATE.focusTarget = null;
+                        // 开始自动弹出消息，每个间隔1秒
+                        startAutoMessageSequence();
+                    }
+                } else {
+                    // 双手放下时，不立即退出消息模式，让消息流程自然完成
+                    if (wasBothHands) {
+                        STATE.bothHandsStartTime = 0;
+                        STATE.bothHandsDuration = 0;
+                        // 不再立即退出消息模式，让消息流程自然完成
+                    }
+                    // 只有一只手时，使用正常的手势识别逻辑（保留所有单手控制）
+                    const thumb = lm[4]; const index = lm[8]; const wrist = lm[0];
+                    const pinchDist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+                    const tips = [lm[8], lm[12], lm[16], lm[20]];
+                    let avgDist = 0;
+                    tips.forEach(t => avgDist += Math.hypot(t.x - wrist.x, t.y - wrist.y));
+                    avgDist /= 4;
+
+                    // 如果消息模式启用，不允许散开，强制保持在TREE模式
+                    if (STATE.messageModeEnabled) {
+                        if (STATE.mode !== 'TREE') {
+                            STATE.mode = 'TREE';
+                            STATE.focusTarget = null;
+                        }
+                    } else {
+                        // 消息模式未启用时，正常的手势控制
+                    if (pinchDist < 0.05) {
+                        if (STATE.mode !== 'FOCUS') {
+                            STATE.mode = 'FOCUS';
+                            const photos = particleSystem.filter(p => p.type === 'PHOTO');
+                            if (photos.length) STATE.focusTarget = photos[Math.floor(Math.random()*photos.length)].mesh;
+                        }
+                    } else if (avgDist < 0.25) {
+                        if (STATE.mode !== 'TREE') {
+                            STATE.mode = 'TREE';
+                            STATE.focusTarget = null;
+                        }
+                    } else if (avgDist > 0.4) {
+                        if (STATE.mode !== 'SCATTER') {
+                            STATE.mode = 'SCATTER';
+                            STATE.focusTarget = null;
+                            }
+                        }
+                    }
+                }
+            } else {
+                STATE.hand.detected = false;
+                const wasBothHandsBefore = STATE.bothHandsDetected;
+                STATE.bothHandsDetected = false;
+                
+                // 如果之前是双手，现在放下了，不立即退出消息模式，让消息流程自然完成
+                if (wasBothHandsBefore) {
+                    STATE.bothHandsStartTime = 0;
+                    STATE.bothHandsDuration = 0;
+                    // 不再立即退出消息模式，让消息流程自然完成
+                }
+            }
+        }
+
+        function setupEvents() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                composer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+            
+            // 更新双手抬起的持续时间
+            if (STATE.bothHandsDetected && STATE.bothHandsStartTime > 0) {
+                STATE.bothHandsDuration = (performance.now() - STATE.bothHandsStartTime) / 1000; // 转换为秒
+            } else {
+                STATE.bothHandsDuration = 0;
+            }
+
+            // Rotation Logic
+            // 如果消息模式启用，强制保持在TREE模式，不允许散开
+            if (STATE.messageModeEnabled && STATE.mode !== 'TREE') {
+                STATE.mode = 'TREE';
+                STATE.focusTarget = null;
+            }
+            
+            // 圣诞树一直转，即使检测到双手也转
+            if (STATE.mode === 'SCATTER' && STATE.hand.detected && !STATE.bothHandsDetected && !STATE.messageModeEnabled) {
+                // 添加死区，避免中心位置时的微小抖动
+                const deadZone = 0.1;
+                const handX = Math.abs(STATE.hand.x) > deadZone ? STATE.hand.x : 0;
+                const handY = Math.abs(STATE.hand.y) > deadZone ? STATE.hand.y : 0;
+                
+                // 使用增量旋转而不是绝对位置，限制最大旋转速度
+                const maxRotationSpeed = 1.5; // 最大旋转速度（弧度/秒）
+                const rotationSpeedY = handX * maxRotationSpeed;
+                const rotationSpeedX = -handY * maxRotationSpeed * 0.3; // X轴旋转更慢
+                
+                STATE.rotation.y += rotationSpeedY * dt;
+                STATE.rotation.x += rotationSpeedX * dt;
+            } else {
+                // 圣诞树一直转，即使检测到双手也转
+                if(STATE.mode === 'TREE') {
+                    STATE.rotation.y += 0.3 * dt;
+                    STATE.rotation.x += (0 - STATE.rotation.x) * 2.0 * dt;
+                } else {
+                     STATE.rotation.y += 0.1 * dt; 
+                }
+            }
+
+            // 应用圣诞树缩放
+            mainGroup.scale.lerp(new THREE.Vector3(STATE.treeScale, STATE.treeScale, STATE.treeScale), 2.0 * dt);
+
+            mainGroup.rotation.y = STATE.rotation.y;
+            mainGroup.rotation.x = STATE.rotation.x;
+
+            // 处理最后一个消息的特殊效果
+            if (STATE.finalMessageShown) {
+                const elapsedTime = (performance.now() - STATE.finalMessageStartTime) / 1000; // 转换为秒
+                
+                // 背景淡出效果（让背景消失）
+                if (elapsedTime < 0.5) {
+                    // 前0.5秒快速淡出背景
+                    STATE.backgroundFadeOut = Math.min(elapsedTime / 0.5, 1.0);
+                } else {
+                    STATE.backgroundFadeOut = 1.0;
+                }
+                
+                // 隐藏其他消息（只显示最后一个消息和问候消息）
+                messageParticles.forEach(particle => {
+                    if (particle.mesh && particle.mesh.userData && 
+                        !particle.mesh.userData.isFinalMessage && 
+                        !particle.mesh.userData.isGreetingMessage) {
+                        if (particle.mesh.userData.material) {
+                            // 快速淡出其他消息
+                            particle.mesh.userData.material.opacity = Math.max(0, 1.0 - elapsedTime * 2);
+                        }
+                    }
+                });
+                
+                // 6秒后显示"小米，圣诞快乐"（停留时间增加一倍）
+                if (elapsedTime >= 6.0 && !STATE.greetingMessageShown) {
+                    // 隐藏最后一个消息，显示"小米，圣诞快乐"
+                    messageParticles.forEach(particle => {
+                        if (particle.mesh && particle.mesh.userData && particle.mesh.userData.isFinalMessage) {
+                            if (particle.mesh.userData.material) {
+                                particle.mesh.userData.material.opacity = 0;
+                            }
+                        }
+                    });
+                    
+                    // 创建"小米，圣诞快乐"消息
+                    createGreetingMessage();
+                    STATE.greetingMessageShown = true;
+                    STATE.greetingMessageStartTime = performance.now();
+                }
+                
+                // "小米，圣诞快乐"显示6秒后退出message模式（停留时间增加一倍）
+                if (STATE.greetingMessageShown) {
+                    const greetingElapsedTime = (performance.now() - STATE.greetingMessageStartTime) / 1000;
+                    if (greetingElapsedTime >= 6.0) {
+                        // 退出消息模式，标记为已完成，不再启动
+                        STATE.messageModeEnabled = false;
+                        STATE.messageModeCompleted = true; // 标记消息模式已完成
+                        STATE.finalMessageShown = false;
+                        STATE.finalMessageStartTime = 0;
+                        STATE.greetingMessageShown = false;
+                        STATE.greetingMessageStartTime = 0;
+                        STATE.backgroundFadeOut = 0;
+                        STATE.currentMessageIndex = 0;
+                        
+                        // 停止创建新消息
+                        if (STATE.messageTimer) {
+                            clearTimeout(STATE.messageTimer);
+                            clearInterval(STATE.messageTimer);
+                            STATE.messageTimer = null;
+                        }
+                        
+                        // 清除所有消息
+                        clearMessages();
+                        
+                        // 恢复圣诞树大小
+                        STATE.treeScale = 1.0;
+                    }
+                }
+            }
+            
+            // 应用背景淡出效果（通过调整场景背景和主组的透明度）
+            if (STATE.backgroundFadeOut > 0) {
+                const fadeAlpha = 1.0 - STATE.backgroundFadeOut;
+                // 让主组（圣诞树）变暗
+                mainGroup.traverse((child) => {
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(mat => {
+                                if (mat.opacity !== undefined) {
+                                    mat.opacity = fadeAlpha;
+                                }
+                            });
+                        } else {
+                            if (child.material.opacity !== undefined) {
+                                child.material.opacity = fadeAlpha;
+                            }
+                        }
+                    }
+                });
+                // 让场景背景变暗
+                if (scene.background) {
+                    const bgColor = scene.background;
+                    if (bgColor instanceof THREE.Color) {
+                        scene.background = new THREE.Color(
+                            bgColor.r * fadeAlpha,
+                            bgColor.g * fadeAlpha,
+                            bgColor.b * fadeAlpha
+                        );
+                    }
+                }
+                // 让粒子系统也变暗
+                particleSystem.forEach(p => {
+                    if (p.mesh && p.mesh.material) {
+                        if (Array.isArray(p.mesh.material)) {
+                            p.mesh.material.forEach(mat => {
+                                if (mat.opacity !== undefined) {
+                                    mat.opacity = fadeAlpha;
+                                }
+                            });
+                        } else {
+                            if (p.mesh.material.opacity !== undefined) {
+                                p.mesh.material.opacity = fadeAlpha;
+                            }
+                        }
+                    }
+                });
+            } else {
+                // 恢复背景和透明度
+                if (scene.background && scene.background instanceof THREE.Color) {
+                    scene.background = new THREE.Color(CONFIG.colors.bg);
+                }
+                // 恢复主组透明度
+                mainGroup.traverse((child) => {
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(mat => {
+                                if (mat.opacity !== undefined && mat.opacity < 1.0) {
+                                    mat.opacity = 1.0;
+                                }
+                            });
+                        } else {
+                            if (child.material.opacity !== undefined && child.material.opacity < 1.0) {
+                                child.material.opacity = 1.0;
+                            }
+                        }
+                    }
+                });
+            }
+            
+            // 更新消息文字的淡入效果和旋转
+            if (messageParticles.length > 0) {
+                // 先移除标记为待移除的消息
+                messageParticles = messageParticles.filter(particle => {
+                    if (particle.mesh && particle.mesh.userData && particle.mesh.userData.shouldRemove) {
+                        if (particle.mesh.parent) {
+                            particle.mesh.parent.remove(particle.mesh);
+                        }
+                        return false; // 移除
+                    }
+                    return true; // 保留
+                });
+                
+                messageParticles.forEach(particle => {
+                    if (particle.mesh && particle.mesh.userData) {
+                        const sprite = particle.mesh;
+                        const userData = sprite.userData;
+                        
+                        // 最后一个消息和问候消息的特殊处理
+                        if (userData.isFinalMessage || userData.isGreetingMessage) {
+                            // 快速淡入
+                        if (userData.fadeIn && userData.material) {
+                            userData.fadeTime += dt;
+                                const fadeDuration = 0.3; // 0.3秒快速淡入
+                            if (userData.fadeTime < fadeDuration) {
+                                userData.material.opacity = Math.min(userData.fadeTime / fadeDuration, 1.0);
+                            } else {
+                                userData.material.opacity = 1.0;
+                                userData.fadeIn = false;
+                            }
+                        }
+                            // 始终面向相机，不旋转
+                        sprite.quaternion.copy(camera.quaternion);
+                            if (userData.material) {
+                                userData.material.rotation = 0;
+                    }
+            } else {
+                            // 普通消息的淡入效果
+                            if (userData.fadeIn && userData.material && !userData.fadeOut) {
+                                userData.fadeTime += dt;
+                                const fadeDuration = 1.0; // 1秒淡入（从2.5秒改为1秒）
+                                if (userData.fadeTime < fadeDuration) {
+                                    userData.material.opacity = Math.min(userData.fadeTime / fadeDuration, 1.0);
+                                } else {
+                                    userData.material.opacity = 1.0;
+                                    userData.fadeIn = false;
+                                    // 记录淡入完成的时间
+                                    userData.fadeInCompleteTime = performance.now();
+                                }
+                            }
+                            
+                            // 检查是否应该开始淡出（淡入完成后2秒，即总共3秒后开始淡出，不包括最后一个消息）
+                            if (!userData.fadeIn && !userData.fadeOut && !userData.isFinalMessage && userData.fadeInCompleteTime) {
+                                const displayDuration = 2.0; // 显示2秒后开始淡出（淡入1秒+显示2秒=3秒后开始淡出）
+                                const elapsedSinceComplete = (performance.now() - userData.fadeInCompleteTime) / 1000; // 转换为秒
+                                
+                                if (elapsedSinceComplete >= displayDuration) {
+                                    // 开始淡出（从3秒开始）
+                                    userData.fadeOut = true;
+                                    userData.fadeOutTime = 0;
+                                    // 设置淡出时的目标旋转角度（-20到20度）
+                                    userData.fadeOutTargetAngle = (Math.random() - 0.5) * 2 * 20 * (Math.PI / 180);
+                                    // 从当前角度开始旋转
+                                    userData.fadeOutStartAngle = userData.currentRotationAngle || userData.targetRotationAngle || 0;
+                                    userData.isRotatingToFadeOut = true;
+                                }
+                            }
+                        }
+                        
+                        // 淡出效果（同时旋转）
+                        if (userData.fadeOut && userData.material) {
+                            // 确保fadeOutTime已初始化
+                            if (userData.fadeOutTime === undefined) {
+                                userData.fadeOutTime = 0;
+                            }
+                            userData.fadeOutTime += dt;
+                            const fadeOutDuration = 1.0; // 1秒淡出
+                            
+                            // 淡出透明度
+                            if (userData.fadeOutTime < fadeOutDuration) {
+                                userData.material.opacity = Math.max(1.0 - (userData.fadeOutTime / fadeOutDuration), 0.0);
+                            } else {
+                                userData.material.opacity = 0.0;
+                            }
+                            
+                            // 同时旋转到目标角度
+                            if (userData.isRotatingToFadeOut) {
+                                const rotationDuration = fadeOutDuration; // 旋转时间与淡出时间相同
+                                if (userData.fadeOutTime < rotationDuration) {
+                                    const t = userData.fadeOutTime / rotationDuration;
+                                    const easeOut = 1 - Math.pow(1 - t, 3); // 缓出效果
+                                    // 确保角度值存在
+                                    const startAngle = userData.fadeOutStartAngle !== undefined ? userData.fadeOutStartAngle : (userData.currentRotationAngle || 0);
+                                    const targetAngle = userData.fadeOutTargetAngle !== undefined ? userData.fadeOutTargetAngle : 0;
+                                    userData.currentRotationAngle = THREE.MathUtils.lerp(
+                                        startAngle,
+                                        targetAngle,
+                                        easeOut
+                                    );
+                                } else {
+                                    // 旋转完成，固定在目标角度
+                                    if (userData.fadeOutTargetAngle !== undefined) {
+                                        userData.currentRotationAngle = userData.fadeOutTargetAngle;
+                                    }
+                                    userData.isRotatingToFadeOut = false;
+                                }
+                            }
+                            
+                            // 淡出完成后，移除消息
+                            if (userData.fadeOutTime >= fadeOutDuration && userData.material.opacity <= 0) {
+                                // 标记为待移除
+                                userData.shouldRemove = true;
+                            }
+                        } else if (!userData.fadeOut && !userData.isFinalMessage) {
+                            // 从初始倾斜角度旋转到目标角度（正常显示时，不包括最后一个消息）
+                            if (userData.isRotating && userData.rotationTime !== undefined) {
+                                userData.rotationTime += dt;
+                                const rotationDuration = 1.2; // 旋转动画持续时间
+                                
+                                if (userData.rotationTime < rotationDuration) {
+                                    // 使用缓动函数，让旋转更平滑
+                                    const t = userData.rotationTime / rotationDuration;
+                                    const easeOut = 1 - Math.pow(1 - t, 3); // 缓出效果
+                                    userData.currentRotationAngle = THREE.MathUtils.lerp(
+                                        userData.initialRotationAngle || userData.targetRotationAngle,
+                                        userData.targetRotationAngle,
+                                        easeOut
+                                    );
+                                } else {
+                                    // 动画结束后，保持在目标角度
+                                    userData.currentRotationAngle = userData.targetRotationAngle;
+                                    userData.isRotating = false;
+                                }
+                            }
+                        }
+                        
+                        // 让文字始终正对摄像机
+                        sprite.quaternion.copy(camera.quaternion);
+                        // 使用SpriteMaterial的rotation属性，让文字绕着自己旋转（旋转轴垂直于屏幕）
+                        // 确保在所有情况下都更新rotation（包括淡入、正常显示、淡出）
+                        if (userData.material) {
+                            if (userData.isFinalMessage || userData.isGreetingMessage) {
+                                // 最后一个消息和问候消息不旋转
+                                userData.material.rotation = 0;
+                            } else {
+                                const rotationAngle = userData.currentRotationAngle !== undefined ? userData.currentRotationAngle : 0;
+                                userData.material.rotation = rotationAngle;
+                            }
+                        }
+                    }
+                });
+            }
+
+            particleSystem.forEach(p => p.update(dt, STATE.mode, STATE.focusTarget));
+            composer.render();
+        }
+
+        init();
+    </script>
+</body>
+</html>
